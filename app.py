@@ -1,108 +1,28 @@
-import streamlit as st
+import os
 import tensorflow as tf
 import cv2
 import numpy as np
+import streamlit as st
 from PIL import Image
-import io
 
 # Constants
 IMG_WIDTH = 128
 IMG_HEIGHT = 128
 IMG_CHANNELS = 3
 
-def unet_model(input_shape=(IMG_WIDTH, IMG_HEIGHT, IMG_CHANNELS)):
-    inputs = tf.keras.layers.Input(input_shape)
-
-    # Add BatchNormalization after inputs
-    x = layers.BatchNormalization()(inputs)
-
-    # Encoder
-    conv1 = layers.Conv2D(64, 3, padding='same')(x)
-    conv1 = layers.BatchNormalization()(conv1)
-    conv1 = layers.Activation('relu')(conv1)
-    conv1 = layers.Conv2D(64, 3, padding='same')(conv1)
-    conv1 = layers.BatchNormalization()(conv1)
-    conv1 = layers.Activation('relu')(conv1)
-    pool1 = layers.MaxPooling2D(pool_size=(2, 2))(conv1)
-    pool1 = layers.Dropout(0.25)(pool1)  # Add dropout
-
-    conv2 = layers.Conv2D(128, 3, padding='same')(pool1)
-    conv2 = layers.BatchNormalization()(conv2)
-    conv2 = layers.Activation('relu')(conv2)
-    conv2 = layers.Conv2D(128, 3, padding='same')(conv2)
-    conv2 = layers.BatchNormalization()(conv2)
-    conv2 = layers.Activation('relu')(conv2)
-    pool2 = layers.MaxPooling2D(pool_size=(2, 2))(conv2)
-    pool2 = layers.Dropout(0.3)(pool2)  # Add dropout
-
-    # Bottleneck
-    conv3 = layers.Conv2D(256, 3, padding='same')(pool2)
-    conv3 = layers.BatchNormalization()(conv3)
-    conv3 = layers.Activation('relu')(conv3)
-    conv3 = layers.Conv2D(256, 3, padding='same')(conv3)
-    conv3 = layers.BatchNormalization()(conv3)
-    conv3 = layers.Activation('relu')(conv3)
-    conv3 = layers.Dropout(0.4)(conv3)  # Add dropout
-
-    # Decoder
-    up1 = layers.UpSampling2D(size=(2, 2))(conv3)
-    up1 = layers.Conv2D(128, 2, padding='same')(up1)
-    up1 = layers.BatchNormalization()(up1)
-    up1 = layers.Activation('relu')(up1)
-    merge1 = layers.concatenate([conv2, up1], axis=3)
-    merge1 = layers.Dropout(0.3)(merge1)  # Add dropout
-
-    conv4 = layers.Conv2D(128, 3, padding='same')(merge1)
-    conv4 = layers.BatchNormalization()(conv4)
-    conv4 = layers.Activation('relu')(conv4)
-    conv4 = layers.Conv2D(128, 3, padding='same')(conv4)
-    conv4 = layers.BatchNormalization()(conv4)
-    conv4 = layers.Activation('relu')(conv4)
-
-    up2 = layers.UpSampling2D(size=(2, 2))(conv4)
-    up2 = layers.Conv2D(64, 2, padding='same')(up2)
-    up2 = layers.BatchNormalization()(up2)
-    up2 = layers.Activation('relu')(up2)
-    merge2 = layers.concatenate([conv1, up2], axis=3)
-    merge2 = layers.Dropout(0.25)(merge2)  # Add dropout
-
-    conv5 = layers.Conv2D(64, 3, padding='same')(merge2)
-    conv5 = layers.BatchNormalization()(conv5)
-    conv5 = layers.Activation('relu')(conv5)
-    conv5 = layers.Conv2D(64, 3, padding='same')(conv5)
-    conv5 = layers.BatchNormalization()(conv5)
-    conv5 = layers.Activation('relu')(conv5)
-
-    # Changed output to 2 channels (binary segmentation) with sigmoid activation
-    outputs = layers.Conv2D(2, 1, activation='sigmoid')(conv5)
-
-    model = tf.keras.Model(inputs=[inputs], outputs=[outputs])
-    return model
-
-
-# Class mapping
-CLASS_NAMES = {
-    0: 'airplane',
-    1: 'automobile',
-    2: 'truck'
-}
+@st.cache_resource
+def load_segmentation_model():
+    """Load and cache the pre-trained segmentation model"""
+    # Directly load the pre-trained segmentation model
+    segmentation_model = tf.keras.models.load_model('seg_model.h5')
+    return segmentation_model
 
 @st.cache_resource
-def load_models():
-    """Load and cache the models"""
-    # Load classification model
-    classification_model = tf.keras.models.load_model('best_classifier_new.keras')
-    
-    # Create and load segmentation model
-    segmentation_model = unet_model((IMG_WIDTH, IMG_HEIGHT, IMG_CHANNELS))
-    segmentation_model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-        loss=tf.keras.losses.BinaryCrossentropy(),
-        metrics=['accuracy', tf.keras.metrics.MeanIoU(num_classes=2)]
-    )
-    segmentation_model.load_weights('seg_best_model_50_epochs.keras')
-    
-    return classification_model, segmentation_model
+def load_classification_model():
+    """Load and cache the pre-trained classification model"""
+    # Load the classification model
+    classification_model = tf.keras.models.load_model('best_classifier_final.keras')
+    return classification_model
 
 def process_image(upload):
     """Process uploaded image"""
@@ -126,60 +46,62 @@ def process_image(upload):
     
     return image_array
 
+def predict_with_segmentation_and_classification(image):
+    """Generate segmentation mask and use classification model on the image"""
+    segmentation_model = load_segmentation_model()
+    classification_model = load_classification_model()
+
+    # 1. Segmentation prediction
+    mask_pred = segmentation_model.predict(np.expand_dims(image, 0), verbose=0)[0]
+    mask_img = (np.argmax(mask_pred, axis=-1) * 255).astype(np.uint8)
+    mask_img = cv2.resize(mask_img, (IMG_WIDTH, IMG_HEIGHT))  # resize mask to match input size of classification model
+    mask_img = np.expand_dims(mask_img, axis=-1)
+    mask_img = np.repeat(mask_img, 3, axis=-1)  # Create RGB mask (replicate the mask channel 3 times for 3-channel RGB input)
+    mask_img = mask_img.astype('float32') / 255.0
+
+    # 2. Combine original image and mask
+    combined_image = np.concatenate((image, mask_img), axis=-1)
+    combined_image = np.expand_dims(combined_image, axis=0)
+
+    # 3. Classification prediction
+    class_probabilities = classification_model.predict(combined_image, verbose=0)[0]
+    predicted_class = np.argmax(class_probabilities)
+
+    return predicted_class, class_probabilities, mask_img
+
 def main():
-    st.title("Vehicle Image Classifier")
-    st.write("Upload an image of an airplane, automobile, or truck to classify it!")
+    st.title("Vehicle Segmentation Mask and Classification")
+    st.write("Upload an image to generate a segmentation mask and classify the vehicle!")
     
     # File uploader
-    uploaded_file = st.file_uploader(
-        "Choose an image...", 
-        type=["jpg", "jpeg", "png"]
-    )
-    
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
     if uploaded_file is not None:
         # Display uploaded image
-        st.image(uploaded_file, caption="Uploaded Image", use_column_width=True)
-        
+        st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+
         # Process image when button is clicked
-        if st.button("Classify Image"):
-            with st.spinner("Processing..."):
+        if st.button("Generate Segmentation Mask and Classify Vehicle"):
+            with st.spinner("Generating mask and classification..."):
                 try:
-                    # Load models
-                    classification_model, segmentation_model = load_models()
-                    
                     # Process image
                     image = process_image(uploaded_file)
                     
-                    # Generate mask
-                    mask_prediction = segmentation_model.predict(
-                        np.expand_dims(image, 0),
-                        verbose=0
-                    )
-                    mask = (np.argmax(mask_prediction[0], axis=-1) * 255).astype(np.uint8)
-                    mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
-                    mask = cv2.resize(mask, (IMG_WIDTH, IMG_HEIGHT))
-                    mask = mask.astype('float32') / 255.0
-                    
-                    # Combine image and mask
-                    combined = np.concatenate([image, mask], axis=-1)
-                    combined = np.expand_dims(combined, 0)
-                    
-                    # Make prediction
-                    prediction = classification_model.predict(combined, verbose=0)
-                    predicted_class = np.argmax(prediction)
-                    confidence = prediction[0][predicted_class]
-                    
-                    # Display results
-                    st.success(f"Predicted class: {CLASS_NAMES[predicted_class]}")
-                    st.progress(float(confidence))
-                    st.write(f"Confidence: {confidence:.2%}")
+                    # Predict segmentation and classification
+                    predicted_class, probabilities, mask = predict_with_segmentation_and_classification(image)
                     
                     # Display segmentation mask
                     st.subheader("Segmentation Mask")
-                    st.image(mask, caption="Generated Mask", use_column_width=True)
-                    
+                    st.image(mask, caption="Generated Segmentation Mask", use_container_width=True)
+
+                    # Display classification result
+                    class_names = ["airplane", "automobile", "truck"]  # Replace with actual class names
+                    st.subheader("Classification Result")
+                    st.write(f"Predicted class: {class_names[predicted_class]}")
+                    st.write(f"Class probabilities: {probabilities}")
+
                 except Exception as e:
-                    st.error(f"Error processing image: {str(e)}")
+                    st.error(f"Error generating mask and classification: {str(e)}")
 
 if __name__ == "__main__":
     main()
