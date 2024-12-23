@@ -4,30 +4,69 @@ import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
+import matplotlib.pyplot as plt
+import requests
+from io import BytesIO
 
 # Constants
 IMG_WIDTH = 128
 IMG_HEIGHT = 128
 IMG_CHANNELS = 3
 
+# CSS for cyberpunk theme
+st.markdown("""
+    <style>
+        body {
+            background-color: #121212;
+            color: #00FF99;
+            font-family: 'Courier New', monospace;
+        }
+        .stButton>button {
+            background-color: #00FF99;
+            color: #121212;
+            font-weight: bold;
+            border-radius: 5px;
+            padding: 10px;
+            box-shadow: 0 4px 8px rgba(0, 255, 153, 0.6);
+        }
+        .stButton>button:hover {
+            background-color: #00FF66;
+            box-shadow: 0 6px 12px rgba(0, 255, 102, 0.8);
+        }
+        .stTextInput input {
+            background-color: #333333;
+            color: #00FF99;
+            border: 1px solid #00FF99;
+        }
+        .stTextInput input:focus {
+            border-color: #00FF66;
+        }
+        .stFileUploader {
+            color: #00FF99;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
 @st.cache_resource
 def load_segmentation_model():
     """Load and cache the pre-trained segmentation model"""
-    # Directly load the pre-trained segmentation model
     segmentation_model = tf.keras.models.load_model('seg_model.h5')
     return segmentation_model
 
 @st.cache_resource
 def load_classification_model():
     """Load and cache the pre-trained classification model"""
-    # Load the classification model
     classification_model = tf.keras.models.load_model('best_classifier_final.keras')
     return classification_model
 
-def process_image(upload):
-    """Process uploaded image"""
-    # Read image
-    image = Image.open(upload)
+def process_image(image_source):
+    """Process uploaded image or PIL Image"""
+    # If image_source is already a PIL Image (from URL)
+    if isinstance(image_source, Image.Image):
+        image = image_source
+    else:
+        # If image_source is a file upload
+        image = Image.open(image_source)
     
     # Convert to numpy array
     image_array = np.array(image)
@@ -69,23 +108,55 @@ def predict_with_segmentation_and_classification(image):
 
     return predicted_class, class_probabilities, mask_img
 
-def main():
-    st.title("Vehicle Segmentation Mask and Classification")
-    st.write("Upload an image to generate a segmentation mask and classify the vehicle!")
-    
-    # File uploader
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+def plot_class_probabilities(probabilities, class_names):
+    """Plot a bar chart for class probabilities"""
+    fig, ax = plt.subplots()
+    ax.bar(class_names, probabilities, color=['#FF007F', '#00FF99', '#00FFFF'])
+    ax.set_xlabel('Class')
+    ax.set_ylabel('Probability')
+    ax.set_title('Classification Probabilities')
+    st.pyplot(fig)
 
-    if uploaded_file is not None:
-        # Display uploaded image
-        st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+def load_image_from_url(url):
+    """Load an image from a URL"""
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        return Image.open(BytesIO(response.content))
+    except Exception as e:
+        st.error(f"Error loading image from URL: {str(e)}")
+        return None
+
+def main():
+    st.title("AutoMobile - Airplane - Truck, Classification and Segmentation")
+    st.write("Upload an image or paste an image URL to generate a segmentation mask and classify the vehicle!")
+
+    # Add tabs for upload methods
+    tab1, tab2 = st.tabs(["Upload Image", "Image URL"])
+
+    with tab1:
+        uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+        image_source = uploaded_file
+        if uploaded_file is not None:
+            input_image = Image.open(uploaded_file)
+    
+    with tab2:
+        url = st.text_input("Enter image URL:")
+        if url:
+            input_image = load_image_from_url(url)
+            image_source = input_image
+
+    # Process image if available from either source
+    if 'input_image' in locals() and input_image is not None:
+        # Display uploaded/loaded image
+        st.image(input_image, caption="Input Image", use_container_width=True)
 
         # Process image when button is clicked
         if st.button("Generate Segmentation Mask and Classify Vehicle"):
             with st.spinner("Generating mask and classification..."):
                 try:
                     # Process image
-                    image = process_image(uploaded_file)
+                    image = process_image(image_source)
                     
                     # Predict segmentation and classification
                     predicted_class, probabilities, mask = predict_with_segmentation_and_classification(image)
@@ -95,10 +166,13 @@ def main():
                     st.image(mask, caption="Generated Segmentation Mask", use_container_width=True)
 
                     # Display classification result
-                    class_names = ["airplane", "automobile", "truck"]  # Replace with actual class names
+                    class_names = ["airplane", "automobile", "truck"]
                     st.subheader("Classification Result")
                     st.write(f"Predicted class: {class_names[predicted_class]}")
                     st.write(f"Class probabilities: {probabilities}")
+
+                    # Plot class probabilities
+                    plot_class_probabilities(probabilities, class_names)
 
                 except Exception as e:
                     st.error(f"Error generating mask and classification: {str(e)}")
