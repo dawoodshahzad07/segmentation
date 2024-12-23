@@ -3,3 +3,5 @@ python-multipart
 numpy
 opencv-python-headless
 Pillow
+matplotlib
+requests
